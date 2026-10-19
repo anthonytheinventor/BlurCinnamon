@@ -5,31 +5,12 @@ uniform float brightness;
 uniform float width;
 uniform float height;
 
-vec4 getTexture(vec2 uv) {
-    if (uv.x < 3. / width)
-        uv.x = 3. / width;
-
-    if (uv.y < 3. / height)
-        uv.y = 3. / height;
-
-    if (uv.x > 1. - 3. / width)
-        uv.x = 1. - 3. / width;
-
-    if (uv.y > 1. - 3. / height)
-        uv.y = 1. - 3. / height;
-
-    return texture2D(tex, uv);
-}
-
-void blurcinnamon_main() {
-    vec2 uv = cogl_tex_coord_in[0].xy;
-    vec2 direction = vec2(dir, (1.0 - dir));
-
-    float pixel_step;
-    if (dir == 0)
-        pixel_step = 1.0 / height;
-    else
-        pixel_step = 1.0 / width;
+// Blur along one axis. The other coordinate is the same for every tap, so it is clamped once here instead of
+// per tap; the moving coordinate is offset and clamped exactly as before, so the result is bit-identical.
+vec4 blurAxis(float pos, float fixedPos, bool vertical, float pixel_step, float size, float fixedSize) {
+    float lo = 3. / size;
+    float hi = 1. - 3. / size;
+    float fixedClamped = clamp(fixedPos, 3. / fixedSize, 1. - 3. / fixedSize);
 
     vec3 gauss_coefficient;
     gauss_coefficient.x = 1.0 / (sqrt(2.0 * 3.14159265) * sigma);
@@ -38,7 +19,8 @@ void blurcinnamon_main() {
 
     float gauss_coefficient_total = gauss_coefficient.x;
 
-    vec4 ret = getTexture(uv) * gauss_coefficient.x;
+    float p = clamp(pos, lo, hi);
+    vec4 ret = texture2D(tex, vertical ? vec2(fixedClamped, p) : vec2(p, fixedClamped)) * gauss_coefficient.x;
     gauss_coefficient.xy *= gauss_coefficient.yz;
 
     int n_steps = int(ceil(1.5 * sigma)) * 2;
@@ -49,23 +31,32 @@ void blurcinnamon_main() {
         coefficient_subtotal += gauss_coefficient.x;
         if (coefficient_subtotal <= 0.0)
             break;
-        
+
         float gauss_ratio = gauss_coefficient.x / coefficient_subtotal;
 
-        float foffset = float(i) + gauss_ratio;
-        vec2 offset = direction * foffset * pixel_step;
+        float offset = (float(i) + gauss_ratio) * pixel_step;
+        float a = clamp(pos + offset, lo, hi);
+        float b = clamp(pos - offset, lo, hi);
 
-        ret += getTexture(uv + offset) * coefficient_subtotal;
-        ret += getTexture(uv - offset) * coefficient_subtotal;
+        ret += texture2D(tex, vertical ? vec2(fixedClamped, a) : vec2(a, fixedClamped)) * coefficient_subtotal;
+        ret += texture2D(tex, vertical ? vec2(fixedClamped, b) : vec2(b, fixedClamped)) * coefficient_subtotal;
 
         gauss_coefficient_total += 2.0 * coefficient_subtotal;
         gauss_coefficient.xy *= gauss_coefficient.yz;
     }
-    vec4 outColor = ret / gauss_coefficient_total;
+    return ret / gauss_coefficient_total;
+}
 
-    // apply brightness on the second pass (dir==0 comes last)
+void blurcinnamon_main() {
+    vec2 uv = cogl_tex_coord_in[0].xy;
+    vec4 outColor;
+
     if (dir == 0) {
+        outColor = blurAxis(uv.y, uv.x, true, 1.0 / height, height, width);
+        // apply brightness on the second pass (dir==0 comes last)
         outColor.rgb *= brightness;
+    } else {
+        outColor = blurAxis(uv.x, uv.y, false, 1.0 / width, width, height);
     }
 
     cogl_color_out = outColor;

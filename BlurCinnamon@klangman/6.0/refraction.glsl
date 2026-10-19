@@ -117,43 +117,11 @@ vec4 sampleBackdrop(vec2 uv) {
     return texture2D(tex, resolveUV(uv));
 }
 
+// The glass's blur is a chained Dual Kawase effect (refraction.js sets blur_radius to 0), so the backdrop is
+// already blurred and is sampled directly. Dropping the unused in-shader blur loop lets the shader compile
+// in SIMD16 on Intel Gen7 instead of falling back to SIMD8.
 vec4 sampleGlassBackdrop(vec2 uv) {
-    if (blur_radius <= 0.01)
-        return sampleBackdrop(uv);
-
-    float sigma = max(0.1, blur_radius * 0.5);
-    float pixelStep = blur_direction == 1 ? 1.0 / width : 1.0 / height;
-    vec2 direction = vec2(float(blur_direction), 1.0 - float(blur_direction));
-
-    vec3 gauss;
-    gauss.x = 1.0 / (sqrt(2.0 * PI) * sigma);
-    gauss.y = exp(-0.5 / (sigma * sigma));
-    gauss.z = gauss.y * gauss.y;
-
-    vec4 accum = sampleBackdrop(uv) * gauss.x;
-    float weightSum = gauss.x;
-
-    gauss.xy *= gauss.yz;
-
-    int radius = int(ceil(1.5 * sigma)) * 2;
-    for (int i = 1; i <= radius; i += 2) {
-        float subtotal = gauss.x;
-
-        gauss.xy *= gauss.yz;
-        subtotal += gauss.x;
-
-        float gaussRatio = gauss.x / subtotal;
-        float offset = float(i) + gaussRatio;
-        vec2 uvOffset = direction * offset * pixelStep;
-
-        accum += sampleBackdrop(uv + uvOffset) * subtotal;
-        accum += sampleBackdrop(uv - uvOffset) * subtotal;
-        weightSum += subtotal * 2.0;
-
-        gauss.xy *= gauss.yz;
-    }
-
-    return accum / weightSum;
+    return sampleBackdrop(uv);
 }
 
 vec4 tintFallbackSample() {
@@ -177,12 +145,12 @@ float squircleCornerDistance(vec2 p, vec2 halfSize, float radius) {
     vec2 extent = min(vec2(radius * continuousCornerExtent), halfSize);
     vec2 core = max(halfSize - extent, vec2(0.0));
     vec2 q = abs(p) - core;
+    if (q.x <= 0.0 && q.y <= 0.0)
+        return -min(halfSize.x - abs(p.x), halfSize.y - abs(p.y));
+
     vec2 corner = max(q, vec2(0.0));
     vec2 normalized = corner / max(extent, vec2(0.001));
     float superLength = pow(pow(normalized.x, 4.0) + pow(normalized.y, 4.0), 0.25);
-
-    if (q.x <= 0.0 && q.y <= 0.0)
-        return -min(halfSize.x - abs(p.x), halfSize.y - abs(p.y));
 
     return (superLength - 1.0) * min(extent.x, extent.y);
 }
@@ -190,27 +158,36 @@ float squircleCornerDistance(vec2 p, vec2 halfSize, float radius) {
 struct EdgeInfo {
     float distance;
     float alpha;
-    vec2 dir;
 };
 
 EdgeInfo estimateAnalyticEdge(vec2 px, vec2 halfSize, float radius, float shortest) {
     vec2 p = px - halfSize;
     float signedDistance;
-    vec2 core;
 
-    if (radius >= shortest * 0.49 || radius < 0.5) {
-        core = max(halfSize - vec2(radius), vec2(0.0));
+    if (radius >= shortest * 0.49 || radius < 0.5)
         signedDistance = roundedBoxDistance(p, halfSize, radius);
-    } else {
-        const float continuousCornerExtent = 1.528;
-        vec2 extent = min(vec2(radius * continuousCornerExtent), halfSize);
-        core = max(halfSize - extent, vec2(0.0));
+    else
         signedDistance = squircleCornerDistance(p, halfSize, radius);
-    }
 
     EdgeInfo info;
     info.distance = max(0.0, -signedDistance);
     info.alpha = clamp(1.0 - max(0.0, signedDistance), 0.0, 1.0);
+    return info;
+}
+
+// Direction from the glass to its nearest edge. Separate from estimateAnalyticEdge() because only the
+// refracting band needs it, so the flat interior skips this work.
+vec2 estimateEdgeDirection(vec2 px, vec2 halfSize, float radius, float shortest) {
+    vec2 p = px - halfSize;
+    vec2 core;
+
+    if (radius >= shortest * 0.49 || radius < 0.5) {
+        core = max(halfSize - vec2(radius), vec2(0.0));
+    } else {
+        const float continuousCornerExtent = 1.528;
+        vec2 extent = min(vec2(radius * continuousCornerExtent), halfSize);
+        core = max(halfSize - extent, vec2(0.0));
+    }
 
     vec2 cornerDelta = max(abs(p) - core, vec2(0.0));
     vec2 normalDelta;
@@ -226,7 +203,7 @@ EdgeInfo estimateAnalyticEdge(vec2 px, vec2 halfSize, float radius, float shorte
     float normalLength = length(normalDelta);
 
     if (normalLength > 0.001) {
-        info.dir = normalDelta / normalLength;
+        return normalDelta / normalLength;
     } else {
         vec2 lensPx = px;
         float dL = lensPx.x;
@@ -235,13 +212,11 @@ EdgeInfo estimateAnalyticEdge(vec2 px, vec2 halfSize, float radius, float shorte
         float dB = halfSize.y * 2.0 - lensPx.y;
         float dm = min(min(dL, dR), min(dT, dB));
 
-        info.dir = vec2(
+        return vec2(
             (dL < dR && dL == dm) ? -1.0 : (dR <= dL && dR == dm) ? 1.0 : 0.0,
             (dT < dB && dT == dm) ? -1.0 : (dB <= dT && dB == dm) ? 1.0 : 0.0
         );
     }
-
-    return info;
 }
 
 vec2 backdropSampleUV(vec2 sampleUV, vec2 displacementPx) {
@@ -358,7 +333,7 @@ void blurcinnamon_main() {
     float edgeOpacity = edge.alpha;
     float edgeBand = 1.0;
     float refractionBand = bezel;
-    vec2 dir = edge.dir;
+    vec2 dir = vec2(0.0);
 
     if (useCircularSurface) {
         float circleRadius = shortestSide * 0.5;
@@ -392,6 +367,9 @@ void blurcinnamon_main() {
         cogl_color_out = applyTintAndShadow(flatSample, localUV, finalOpacity);
         return;
     }
+
+    if (!useCircularSurface)
+        dir = estimateEdgeDirection(glassPx, halfSize, R, shortestSide);
 
     float bezelRatio = clamp(distFromSide / refractionBand, 0.0, 1.0);
     float normDisp = distFromSide < refractionBand
