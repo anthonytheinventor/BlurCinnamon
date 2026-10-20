@@ -76,11 +76,18 @@ const GlslEffectBase = USE_GLSL_EFFECT ? GObject.registerClass({
     }
 
     // Uniforms are kept here and applied at paint time, like ShaderEffect does, because property setters
-    // run during construction, before GLSLEffect has created this instance's pipeline.
+    // run during construction, before GLSLEffect has created this instance's pipeline. That pipeline keeps
+    // its uniform values between paints, so only values that changed since the last paint are sent.
     set_uniform_value(name, value) {
-        if (!this._effect_base_uniforms)
+        if (!this._effect_base_uniforms) {
             this._effect_base_uniforms = new Map();
-        this._effect_base_uniforms.set(name, Number(value));
+            this._effect_base_dirty = new Set();
+        }
+        value = Number(value);
+        if (this._effect_base_uniforms.get(name) === value)
+            return;
+        this._effect_base_uniforms.set(name, value);
+        this._effect_base_dirty.add(name);
     }
 
     vfunc_set_actor(actor) {
@@ -90,11 +97,22 @@ const GlslEffectBase = USE_GLSL_EFFECT ? GObject.registerClass({
 
     vfunc_paint_target(...params) {
         let renamed = this.constructor._effect_base_renamed;
-        if (this._effect_base_uniforms && renamed) {
-            for (let [name, value] of this._effect_base_uniforms) {
-                let location = this.get_uniform_location(renamed.has(name) ? `_u_${name}` : name);
-                this.set_uniform_float(location, 1, [value]);
+        if (this._effect_base_dirty?.size && renamed) {
+            // Cogl uniform locations depend only on the name, so they can be looked up once per class. Own
+            // property only: a subclass must not use its parent's cache, which may map a renamed (_u_) uniform.
+            let cls = this.constructor;
+            if (!Object.prototype.hasOwnProperty.call(cls, '_effect_base_locations'))
+                cls._effect_base_locations = new Map();
+            let locations = cls._effect_base_locations;
+            for (let name of this._effect_base_dirty) {
+                let location = locations.get(name);
+                if (location === undefined) {
+                    location = this.get_uniform_location(renamed.has(name) ? `_u_${name}` : name);
+                    locations.set(name, location);
+                }
+                this.set_uniform_float(location, 1, [this._effect_base_uniforms.get(name)]);
             }
+            this._effect_base_dirty.clear();
         }
         super.vfunc_paint_target(...params);
     }
