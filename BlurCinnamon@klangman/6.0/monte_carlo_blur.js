@@ -119,7 +119,7 @@ const MonteCarloBlurEffect =
                this.prefer_closer_pixels = true;
 
             const theme_context = St.ThemeContext.get_for_stage(global.stage);
-            this.set_uniform_value('radius', parseFloat(this._radius * theme_context.scale_factor - 1e-6));
+            this._update_radius_uniform();
         }
 
         get_effect_source() {
@@ -136,6 +136,24 @@ const MonteCarloBlurEffect =
             return DEFAULT_PARAMS;
         }
 
+        // The blurred actor can be laid out at 1/downscale of its on-screen size and scaled back up (see
+        // setViewportGeometry() in extension.js). The radius uniform is in the actor's own pixels, so it shrinks with it.
+        get downscale() {
+            return this._downscale ?? 1;
+        }
+
+        set downscale(value) {
+            if (this._downscale !== value) {
+                this._downscale = value;
+                this._update_radius_uniform();
+            }
+        }
+
+        _update_radius_uniform() {
+            const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+            this.set_uniform_value('radius', parseFloat(this._radius * scale_factor / this.downscale - 1e-6));
+        }
+
         get radius() {
             return this._radius*10;
         }
@@ -146,7 +164,7 @@ const MonteCarloBlurEffect =
 
                 const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
 
-                this.set_uniform_value('radius', parseFloat(this._radius * scale_factor - 1e-6));
+                this._update_radius_uniform();
                 this.set_enabled(this.radius > 0. && this.iterations > 0);
             }
         }
@@ -262,7 +280,7 @@ const MonteCarloBlurEffect =
 
                 this._scale_connection_id = St.ThemeContext.get_for_stage(global.stage).connect('notify::scale-factor', () => {
                     const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
-                    this.set_uniform_value('radius', parseFloat(this._radius * scale_factor - 1e-6));
+                    this._update_radius_uniform();
                 });
             } else {
                 this._actor_connection_size_id = null;
@@ -272,7 +290,7 @@ const MonteCarloBlurEffect =
 
             if (actor) {
                const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
-               this.set_uniform_value('radius', parseFloat(this._radius * scale_factor - 1e-6));
+               this._update_radius_uniform();
             }
         }
     });

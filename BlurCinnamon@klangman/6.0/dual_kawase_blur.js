@@ -66,6 +66,7 @@ function _acquireSubEffect(is_downsample, params) {
         effect.brightness = params.brightness;
         effect.width = params.width;
         effect.height = params.height;
+        effect._downscale = params.downscale ?? 1;
         // Force a recompute of 'offset' regardless of whether any of the property setters above
         // actually changed a value - their own early-exit only re-runs _update_uniforms() when
         // the *value* changes, but 'offset' also depends on pass_index/total_passes, which will
@@ -75,7 +76,13 @@ function _acquireSubEffect(is_downsample, params) {
         effect.set_enabled(effect.radius > 0.);
         return effect;
     }
-    return is_downsample ? new DualFilteringBlurEffect(params) : new DualFilteringUpEffect(params);
+    let { downscale, ...gparams } = params;
+    let effect = is_downsample ? new DualFilteringBlurEffect(gparams) : new DualFilteringUpEffect(gparams);
+    if (downscale !== undefined && downscale !== 1) {
+        effect._downscale = downscale;
+        effect._update_uniforms(St.ThemeContext.get_for_stage(global.stage).scale_factor);
+    }
+    return effect;
 }
 
 function _releaseSubEffect(effect) {
@@ -151,6 +158,7 @@ function makeEffectClass(kind, shader_file) {
 
             this.pass_index = params?.pass_index ?? 0;
             this.total_passes = params?.total_passes ?? 1;
+            this._downscale = 1;
             this._sub_effects = []; 
 
             this.radius = params?.radius ?? 0;
@@ -325,7 +333,7 @@ function makeEffectClass(kind, shader_file) {
                 step_multiplier = Math.pow(2.0, up_index);
             }
 
-            let calculated_offset = base_offset * scale_factor * step_multiplier;
+            let calculated_offset = base_offset * scale_factor * step_multiplier / (this._downscale ?? 1);
             this.set_uniform_value('offset', parseFloat(calculated_offset - 1e-6));
         }
 
@@ -346,6 +354,26 @@ function makeEffectClass(kind, shader_file) {
                 return false;
             Utils.extendOffscreenViewport(paintContext);
             return true;
+        }
+
+        // The blurred actor can be laid out at 1/downscale of its on-screen size and scaled back up (see
+        // setViewportGeometry() in extension.js). Offsets are in the actor's own pixels, so they shrink with it;
+        // sample_reach stays in screen pixels. Set on the first pass, it applies to the whole pyramid.
+        get downscale() {
+            return this._downscale ?? 1;
+        }
+
+        set downscale(value) {
+            if (this._downscale !== value) {
+                this._downscale = value;
+                for (const effect of this._sub_effects ?? [])
+                    effect._downscale = value;
+                const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+                for (const effect of [this, ...(this._sub_effects ?? [])]) {
+                    effect._update_uniforms(scale_factor);
+                    effect.queue_repaint();
+                }
+            }
         }
 
         vfunc_set_actor(actor) {
@@ -411,6 +439,7 @@ function makeEffectClass(kind, shader_file) {
                             brightness: this.brightness, 
                             width: this.width, 
                             height: this.height, 
+                            downscale: this._downscale ?? 1,
                             pass_index: i,
                             total_passes: total_depth 
                         });

@@ -135,7 +135,7 @@ const GaussianBlurEffect =
                this.chained_effect = null;
 
             const theme_context = St.ThemeContext.get_for_stage(global.stage);
-            this.set_uniform_value('sigma', parseFloat(this.radius * theme_context.scale_factor / 2 - 1e-6));
+            this._update_sigma();
             this.set_enabled(this.radius > 0.);
         }
 
@@ -157,14 +157,32 @@ const GaussianBlurEffect =
             return this._radius;
         }
 
+        // The blurred actor can be laid out at 1/downscale of its on-screen size and scaled back up (see
+        // setViewportGeometry() in extension.js). sigma is in the actor's own pixels, so it shrinks with it.
+        get downscale() {
+            return this._downscale ?? 1;
+        }
+
+        set downscale(value) {
+            if (this._downscale !== value) {
+                this._downscale = value;
+                this._update_sigma();
+                if (this.chained_effect)
+                    this.chained_effect.downscale = value;
+            }
+        }
+
+        _update_sigma() {
+            const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+            // like Clutter, we use the assumption radius = 2*sigma
+            this.set_uniform_value('sigma', parseFloat(this._radius * scale_factor / 2 / this.downscale - 1e-6));
+        }
+
         set radius(value) {
             if (this._radius !== value) {
                 this._radius = value;
 
-                const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
-
-                // like Clutter, we use the assumption radius = 2*sigma
-                this.set_uniform_value('sigma', parseFloat(this._radius * scale_factor / 2 - 1e-6));
+                this._update_sigma();
                 this.set_enabled(this.radius > 0.);
 
                 if (this.chained_effect)
@@ -270,8 +288,7 @@ const GaussianBlurEffect =
                 });
 
                 this._scale_connection_id = St.ThemeContext.get_for_stage(global.stage).connect('notify::scale-factor', () => {
-                    const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
-                    this.set_uniform_value('sigma', parseFloat(this._radius * scale_factor / 2 - 1e-6));
+                    this._update_sigma();
                 });
             } else {
                 this._actor_connection_size_id = null;
@@ -280,8 +297,7 @@ const GaussianBlurEffect =
             super.vfunc_set_actor(actor);
             
             if (actor) {
-               const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
-               this.set_uniform_value('sigma', parseFloat(this._radius * scale_factor / 2 - 1e-6));
+               this._update_sigma();
             }
           
             if (this.direction == 0) {
@@ -313,6 +329,7 @@ const GaussianBlurEffect =
                         this.chained_effect.brightness = this.brightness;
                         this.chained_effect.width = this.width;
                         this.chained_effect.height = this.height;
+                        this.chained_effect.downscale = this.downscale;
                         actor.add_effect(this.chained_effect);
                     } else {
                         // Real teardown (not just a reattachment) - release the chained_effect
@@ -331,6 +348,7 @@ const GaussianBlurEffect =
                         width: this.width,
                         height: this.height
                     });
+                    this.chained_effect.downscale = this.downscale;
                     actor.add_effect(this.chained_effect);
                 }
             }

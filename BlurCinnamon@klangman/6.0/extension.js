@@ -467,7 +467,9 @@ function getViewportMargin(viewport) {
    let effect = viewport.get_effect(BLUR_EFFECT_NAME);
    if (!effect || !effect.sample_reach)
       return 0;
-   return Math.ceil(effect.sample_reach) + VIEWPORT_EDGE_PAD;
+   // The shaders clamp their samples VIEWPORT_EDGE_PAD of the viewport's own pixels from its edge, which are
+   // downscale screen pixels each when it is scaled down (sample_reach is in screen pixels either way)
+   return Math.ceil(effect.sample_reach) + VIEWPORT_EDGE_PAD * getViewportDownscale(viewport);
 }
 
 // The visible rect grown by margin on every side, as [x, y, width, height]. It is never grown past the
@@ -485,6 +487,53 @@ function getExpandedRect(x, y, width, height, margin) {
    let y2 = Math.ceil(Math.max(y + height, Math.min(global.stage.height, y + height + margin)));
 
    return [x1, y1, x2 - x1, y2 - y1];
+}
+
+// A viewport is laid out at 1/downscale of its on-screen size and scaled back up by downscale. Clutter sizes an
+// effect's offscreen buffer from the actor's own (unscaled) size, so every blur pass then works on 1/downscale^2
+// of the pixels; only the outermost pass, the corner effect, is drawn through the scale at full resolution.
+// This only suits blurs whose radius is in the actor's own pixels and that stay smooth when stretched: Dual
+// Kawase, Gaussian and Monte Carlo (Liquid Glass draws sharp edges and rim lights, so it stays at full size).
+const VIEWPORT_DOWNSCALE = 2;
+
+function getViewportDownscale(viewport) {
+   let effect = viewport.get_effect(BLUR_EFFECT_NAME);
+   if (effect instanceof DualKawaseBlur.DualFilteringBlurEffect || effect instanceof GaussianBlur.GaussianBlurEffect ||
+       effect instanceof MonteCarloBlur.MonteCarloBlurEffect)
+      return VIEWPORT_DOWNSCALE;
+   return 1;
+}
+
+// Grows the expanded rect [x, y, width, height] so its position and size are multiples of downscale. The
+// scaled-down viewport then covers it exactly (no half-covered last pixel row for the blur to sample), and its
+// scene clone lands on whole pixels, so the x0.5 minification averages whole 2x2 blocks. Anything grown past
+// the stage edge is transparent, but stays inside the shaders' edge clamp.
+function alignToDownscale(rect, downscale) {
+   let [x, y, width, height] = rect;
+   if (downscale <= 1 || width <= 0 || height <= 0)
+      return rect;
+   let ax = Math.floor(x / downscale) * downscale;
+   let ay = Math.floor(y / downscale) * downscale;
+   width = Math.ceil((width + x - ax) / downscale) * downscale;
+   height = Math.ceil((height + y - ay) / downscale) * downscale;
+   return [ax, ay, width, height];
+}
+
+// Positions viewport (at px, py in its parent) over the expanded rect [ex, ey, ew, eh] (stage coordinates),
+// at the given downscale (see getViewportDownscale()), and tells its effects the scale.
+function setViewportGeometry(viewport, px, py, ex, ey, ew, eh, downscale) {
+   viewport.set_position(px, py);
+   viewport.set_size(ew / downscale, eh / downscale);
+   viewport.set_scale(downscale, downscale);
+   let sceneClone = viewport._blurCinnamonSceneClone;
+   sceneClone.set_scale(1 / downscale, 1 / downscale);
+   sceneClone.set_position(-ex / downscale, -ey / downscale);
+   let blurEffect = viewport.get_effect(BLUR_EFFECT_NAME);
+   if (blurEffect && 'downscale' in blurEffect)
+      blurEffect.downscale = downscale;
+   let cornerEffect = viewport.get_effect(CORNER_EFFECT_NAME);
+   if (cornerEffect)
+      cornerEffect.downscale = downscale;
 }
 
 function getBackgroundClip(background) {
@@ -1680,6 +1729,7 @@ class BlurBase {
    _aquireCornerEffect(radius, top, bottom) {
       if (BlurBase.cornerEffectCache.length > 0) {
          let effect = BlurBase.cornerEffectCache.pop();
+         effect.downscale = 1;
          effect.radius = radius;
          effect.corners_top = top;
          effect.corners_bottom = bottom;
@@ -1706,6 +1756,7 @@ class BlurBase {
    _aquireGaussianEffect(radius) {
       if (BlurBase.gaussianEffectCache.length > 0) {
          let effect = BlurBase.gaussianEffectCache.pop();
+         effect.downscale = 1;
          effect.radius = radius;
          return(effect);
       } else {
@@ -1736,6 +1787,7 @@ class BlurBase {
    _aquireMonteCarloEffect(radius) {
       if (BlurBase.monteCarloEffectCache.length > 0) {
          let effect = BlurBase.monteCarloEffectCache.pop();
+         effect.downscale = 1;
          effect.radius = radius;
          effect.iterations = settings.montecarloIterations;
          effect.use_base_pixel = settings.montecarloUseBasePixel;
@@ -1753,6 +1805,7 @@ class BlurBase {
    _aquireDualKawaseEffect(radius) {
       if (BlurBase.dualKawaseEffectCache.length > 0) {
          let effect = BlurBase.dualKawaseEffectCache.pop();
+         effect.downscale = 1;
          effect.radius = radius;
          return(effect);
       } else {
@@ -2008,7 +2061,9 @@ class BlurBase {
    // side except where getExpandedRect() clamps the margin to the screen edge (e.g. a panel's outer edge).
    // rect is the visible rect in viewport-local coordinates, the same rect the corner effect clips to.
    _setLiquidGlassRect(viewport, rect) {
-      viewport._blurCinnamonGlassRect = rect;
+      // Liquid Glass never runs on a scaled-down viewport, and a rect in a scaled viewport's pixels would be
+      // the wrong size for one added later (until the next clip update replaces it), so only keep unscaled rects
+      viewport._blurCinnamonGlassRect = (getViewportDownscale(viewport) > 1) ? null : rect;
       let blurEffect = this._getBlurEffect(viewport);
       if (blurEffect instanceof Refraction.RefractionEffect)
          blurEffect.glass_rect = rect;
@@ -2219,6 +2274,10 @@ class BlurBase {
          viewport.add_effect_with_name( BLUR_EFFECT_NAME, this._aquireLiquidGlassEffect(radius) );
       }
       curEffect = this._getBlurEffect(viewport);
+      // A newly acquired effect starts unscaled; match the viewport's current scale until the next clip
+      // update (see setViewportGeometry()) sets both
+      if (curEffect && 'downscale' in curEffect)
+         curEffect.downscale = viewport.scale_x;
       if ((curEffect instanceof GaussianBlur.GaussianBlurEffect || curEffect instanceof MonteCarloBlur.MonteCarloBlurEffect || curEffect instanceof DualKawaseBlur.DualFilteringBlurEffect) && curEffect.radius != radius) {
          curEffect.radius = radius;
       }
@@ -2292,18 +2351,17 @@ class BlurBase {
          // Remember the visible rect so the margin can be re-derived if the blur radius/type changes
          viewport._blurCinnamonVisibleRect = [x, y, width, height];
          let margin = (width > 0 && height > 0) ? getViewportMargin(viewport) : 0;
-         let [ex, ey, ew, eh] = getExpandedRect(x, y, width, height, margin);
+         let ds = getViewportDownscale(viewport);
+         let [ex, ey, ew, eh] = alignToDownscale(getExpandedRect(x, y, width, height, margin), ds);
          background.set_clip(ex, ey, ew, eh);
-         viewport.set_position(ex, ey);
-         viewport.set_size(ew, eh);
-         viewport._blurCinnamonSceneClone.set_position(-ex, -ey);
+         setViewportGeometry(viewport, ex, ey, ex, ey, ew, eh, ds);
          let cornerEffect = this._getCornerEffect(viewport);
          if (cornerEffect) {
             // Local to the viewport and exactly the visible rect (corner.glsl pads its own mapping by
             // 3px, so no inset is needed - same as BlurApplications._setClip).
-            cornerEffect.set_viewport_clip([x - ex, y - ey, width, height]);
+            cornerEffect.set_viewport_clip([(x - ex) / ds, (y - ey) / ds, width / ds, height / ds]);
          }
-         this._setLiquidGlassRect(viewport, [x-ex, y-ey, width, height]);
+         this._setLiquidGlassRect(viewport, [(x - ex) / ds, (y - ey) / ds, width / ds, height / ds]);
       } else {
          background.set_clip(x, y, width, height);
          let backgroundCornerEffect = this._getCornerEffect(background);
@@ -4966,7 +5024,8 @@ class BlurApplications extends BlurBase {
             data.viewport._blurCinnamonSamplingRect = [rect.x, rect.y, rect.width, rect.height];
             
             let margin = getViewportMargin(data.viewport);
-            let [ex, ey, ew, eh] = getExpandedRect(rect.x, rect.y, rect.width, rect.height, margin);
+            let ds = getViewportDownscale(data.viewport);
+            let [ex, ey, ew, eh] = alignToDownscale(getExpandedRect(rect.x, rect.y, rect.width, rect.height, margin), ds);
             data.background.set_clip( ex, ey, ew, eh );
 
             // Title-bar-only blur: the margin below the title bar lies over this window's own opaque body,
@@ -4980,18 +5039,16 @@ class BlurApplications extends BlurBase {
             // clone of the background so the matching crop of the background/window-clone composite
             // lands inside it. Painted directly on top of background (see _blurWindow's z-order);
             // background itself is transparent (see _createBackgroundAndEffects) so only viewport shows.
-            data.viewport.set_position(ex - rx, ey - ry);
-            data.viewport.set_size(ew, eh);
-            data.viewport._blurCinnamonSceneClone.set_position(-ex, -ey);
+            setViewportGeometry(data.viewport, ex - rx, ey - ry, ex, ey, ew, eh, ds);
 
             let cornerEffect = this._getCornerEffect(data.viewport);
             if (cornerEffect) {
                // Local to the viewport, and sized to exactly the visible rect - cuts the margin away
                // again (corner.glsl's padded mapping means an exact rect-sized clip covers it edge to
                // edge with no inset needed; see the "un-blurred strip" fix this replaces).
-               cornerEffect.set_viewport_clip([rect.x - ex, rect.y - ey, rect.width, rect.height]);
+               cornerEffect.set_viewport_clip([(rect.x - ex) / ds, (rect.y - ey) / ds, rect.width / ds, rect.height / ds]);
             }
-            this._setLiquidGlassRect(data.viewport, [rect.x - ex, rect.y - ey, rect.width, rect.height]);
+            this._setLiquidGlassRect(data.viewport, [(rect.x - ex) / ds, (rect.y - ey) / ds, rect.width / ds, rect.height / ds]);
          } else {
             let cornerEffect = this._getCornerEffect(data.background);
             if (cornerEffect) {

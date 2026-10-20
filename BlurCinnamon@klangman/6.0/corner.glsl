@@ -8,6 +8,8 @@ uniform float width;
 uniform float height;
 uniform bool corners_top;
 uniform bool corners_bottom;
+// Screen pixels per actor pixel (see the downscale property in corner.js); 1 when the actor isn't scaled
+uniform float downscale;
 
 uniform float clip_x0;
 uniform float clip_y0;
@@ -78,14 +80,14 @@ float rounded_rect_coverage(vec2 p, vec4 bounds, float clip_radius) {
 
 void blurcinnamon_main() {
     vec2 uv = cogl_tex_coord_in[0].xy;
-    vec2 pos = uv * vec2(width, height);
+    vec2 pos = uv * vec2(width, height) * downscale;
     vec4 c = getTexture(uv);
 
     vec4 bounds;
     if (clip_width < 0. || clip_height < 0.) {
-        bounds = vec4(clip_x0, clip_y0, clip_x0 + width, clip_y0 + height);
+        bounds = vec4(clip_x0, clip_y0, clip_x0 + width, clip_y0 + height) * downscale;
     } else {
-        bounds = vec4(clip_x0, clip_y0, clip_x0 + clip_width, clip_y0 + clip_height);
+        bounds = vec4(clip_x0, clip_y0, clip_x0 + clip_width, clip_y0 + clip_height) * downscale;
     }
 
     float alpha = rounded_rect_coverage(pos, bounds, radius);

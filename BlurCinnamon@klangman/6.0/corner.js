@@ -106,6 +106,9 @@ var CornerEffect = (typeof global === 'undefined') ?
             this._corners_top = (params.corners_top !== undefined) ? params.corners_top : DEFAULT_PARAMS.corners_top;
             this._corners_bottom = (params.corners_bottom !== undefined) ? params.corners_bottom : DEFAULT_PARAMS.corners_bottom;
             this._clip = (params.clip) ? params.clip : DEFAULT_PARAMS.clip;
+            // Uniforms start at 0, so the scale must always be set (see the downscale property)
+            this._downscale = 1;
+            this.set_uniform_value('downscale', 1.0);
 
             // Safe fetch of the current scale factor 
             this.update_radius();
@@ -133,14 +136,31 @@ var CornerEffect = (typeof global === 'undefined') ?
 
         update_radius() {
             const theme_context = St.ThemeContext.get_for_stage(global.stage);
+            // radius is in screen pixels; width, height and the clip are in the actor's own pixels
+            const ds = this.downscale;
             let radius = Math.min(
                 this.radius * theme_context.scale_factor,
-                this.width / 2, this.height / 2
+                this.width * ds / 2, this.height * ds / 2
             );
             if (this._clip_width >= 0 || this._clip_height >= 0)
-                radius = Math.min(radius, this._clip_width / 2, this._clip_height / 2);
+                radius = Math.min(radius, this._clip_width * ds / 2, this._clip_height * ds / 2);
 
             this.set_uniform_value('radius', parseFloat(radius - 1e-6));
+        }
+
+        // When the actor is laid out at 1/downscale of its on-screen size and scaled back up (see
+        // setViewportGeometry() in extension.js), this effect is the outermost pass, so its shader runs at full
+        // screen resolution. corner.glsl then works in screen pixels, which keeps the rounded edge 1 px wide.
+        get downscale() {
+            return this._downscale ?? 1;
+        }
+
+        set downscale(value) {
+            if (this._downscale !== value) {
+                this._downscale = value;
+                this.set_uniform_value('downscale', parseFloat(value));
+                this.update_radius();
+            }
         }
 
         get width() {
