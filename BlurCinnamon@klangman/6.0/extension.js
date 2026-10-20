@@ -5025,14 +5025,20 @@ class BlurApplications extends BlurBase {
             
             let margin = getViewportMargin(data.viewport);
             let ds = getViewportDownscale(data.viewport);
-            let [ex, ey, ew, eh] = alignToDownscale(getExpandedRect(rect.x, rect.y, rect.width, rect.height, margin), ds);
+            let expanded = getExpandedRect(rect.x, rect.y, rect.width, rect.height, margin);
+            // Title-bar-only blur: below the title bar is this window's own opaque body, and Muffin doesn't
+            // paint the parts of the windows underneath that it hides - not even through our clones of them.
+            // Rather than sample there (which needed NoCullEffect, so every window underneath was painted in
+            // full under the whole window on every redraw), end the expanded rect at the title bar's bottom
+            // edge: the shaders' edge clamp then finishes the blur there, as at a screen edge. A shaded
+            // window has no body, so it keeps its margin.
+            if (data.titlebarsOnly && !data.metaWindow.is_shaded() && expanded[3] > 0)
+               expanded[3] = Math.max(1, Math.ceil(rect.y + rect.height) - expanded[1]);
+            let [ex, ey, ew, eh] = alignToDownscale(expanded, ds);
             data.background.set_clip( ex, ey, ew, eh );
 
-            // Title-bar-only blur: the margin below the title bar lies over this window's own opaque body,
-            // and Muffin doesn't paint the parts of the windows underneath that it hides - not even through
-            // our clones of them - so the blur would sample bare wallpaper there. Stop this window from
-            // culling the windows below it (see NoCullEffect) so the margin has real content.
-            this._setCullsWindowsBelow(compositor, !data.titlebarsOnly);
+            // Windows blurred before this change may still carry the NoCullEffect
+            this._setCullsWindowsBelow(compositor, true);
 
             // Size/position the viewport to the expanded rect (converted from global/stage coordinates
             // to compositor-local, since the viewport is a child of the compositor), and offset its
