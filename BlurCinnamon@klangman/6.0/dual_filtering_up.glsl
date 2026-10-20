@@ -1,3 +1,6 @@
+// HD 4000 local tweak: explicit LOD 0 sampling skips the sampler's LOD calculation (~8% faster, same pixels).
+// Needs allow_glsl_extension_directive_midshader for "cinnamon" in ~/.drirc.
+#extension GL_ARB_shader_texture_lod : require
 uniform sampler2D tex;
 uniform float offset;
 uniform float brightness;
@@ -7,7 +10,7 @@ uniform int is_last_pass;
 
 vec4 sampleBoundary(vec2 uv, vec2 uv_offset, vec2 pixel_step) {
     vec2 pos = clamp(uv + uv_offset * pixel_step, vec2(3.0 / width, 3.0 / height), vec2(1.0 - 3.0 / width, 1.0 - 3.0 / height));
-    return texture2D(tex, pos);
+    return texture2DLod(tex, pos, 0.0);
 }
 
 void blurcinnamon_main() {
