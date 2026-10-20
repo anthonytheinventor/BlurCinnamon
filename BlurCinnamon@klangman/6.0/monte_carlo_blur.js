@@ -118,7 +118,6 @@ const MonteCarloBlurEffect =
             else
                this.prefer_closer_pixels = true;
 
-            const theme_context = St.ThemeContext.get_for_stage(global.stage);
             this._update_radius_uniform();
         }
 
@@ -161,8 +160,6 @@ const MonteCarloBlurEffect =
         set radius(value) {
             if (this._radius !== value/10) {
                 this._radius = value/10;
-
-                const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
 
                 this._update_radius_uniform();
                 this.set_enabled(this.radius > 0. && this.iterations > 0);
@@ -279,7 +276,6 @@ const MonteCarloBlurEffect =
                 });
 
                 this._scale_connection_id = St.ThemeContext.get_for_stage(global.stage).connect('notify::scale-factor', () => {
-                    const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
                     this._update_radius_uniform();
                 });
             } else {
@@ -289,7 +285,6 @@ const MonteCarloBlurEffect =
             super.vfunc_set_actor(actor);
 
             if (actor) {
-               const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
                this._update_radius_uniform();
             }
         }

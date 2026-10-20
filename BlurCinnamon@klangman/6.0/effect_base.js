@@ -118,6 +118,18 @@ const ShaderEffectBase = USE_GLSL_EFFECT ? null : GObject.registerClass({
 
 var EffectBase = USE_GLSL_EFFECT ? GlslEffectBase : ShaderEffectBase;
 
+// A float uniform value for set_uniform_value(). On Cinnamon 6.0, EffectBase is Clutter.ShaderEffect, which turns
+// an integer-valued JS number (e.g. 1 or 2) into an int GValue, and glUniform1i on a float uniform fails; GLSLEffect
+// (6.2+) takes plain numbers and sets every uniform as a float.
+function floatUniform(value) {
+    if (USE_GLSL_EFFECT)
+        return value;
+    let floatValue = new GObject.Value();
+    floatValue.init(GObject.TYPE_FLOAT);
+    floatValue.set_float(value);
+    return floatValue;
+}
+
 // Effect pools
 //
 // Released effects go back into a per-type pool for reuse. On Cinnamon 6.2+ (GLSLEffect) a new

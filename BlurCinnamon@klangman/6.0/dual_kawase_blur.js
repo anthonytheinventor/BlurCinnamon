@@ -76,12 +76,11 @@ function _acquireSubEffect(is_downsample, params) {
         effect.set_enabled(effect.radius > 0.);
         return effect;
     }
+    // downscale isn't a GObject property, so it can't go to the constructor; vfunc_set_actor's
+    // _update_chain_uniforms() applies it once the pyramid is built
     let { downscale, ...gparams } = params;
     let effect = is_downsample ? new DualFilteringBlurEffect(gparams) : new DualFilteringUpEffect(gparams);
-    if (downscale !== undefined && downscale !== 1) {
-        effect._downscale = downscale;
-        effect._update_uniforms(St.ThemeContext.get_for_stage(global.stage).scale_factor);
-    }
+    effect._downscale = downscale ?? 1;
     return effect;
 }
 

@@ -99,18 +99,6 @@ const AUTOHIDE_ANIMATION_TIME = 0.2;  // This is a copy of "Panel.AUTOHIDE_ANIMA
 const BLUR_EFFECT_NAME = "blur";
 const DESAT_EFFECT_NAME = "desat";
 const CORNER_EFFECT_NAME = "corner";
-const NOCULL_EFFECT_NAME = "blurcinnamon-nocull";
-
-// An effect that does nothing at all. Muffin's window culling (meta-cullable.c) skips any window actor
-// that has an enabled effect: such a window is not treated as hiding the windows underneath it, so
-// those windows are painted in full rather than only where they are visible on screen. Our window
-// clones paint through the same culled window actors, so without this the parts of the windows
-// underneath that are hidden by a title-bar-blurred window's opaque body come out empty, and the
-// blur's sampling margin below the title bar picks up bare wallpaper. A plain Clutter.Effect has no
-// offscreen pass, so attaching it costs nothing beyond the extra overdraw of the windows underneath.
-const NoCullEffect = GObject.registerClass({
-   GTypeName: `BlurCinnamonNoCullEffect_${Math.floor(Math.random() * 100000) + 1}`
-}, class NoCullEffect extends Clutter.Effect {});
 
 // Inline style BlurPanels appends to a panel's own inline style so the theme background doesn't hide the blurred background
 const PANEL_TRANSPARENT_STYLE = "border-image: none;  border-color: transparent;  box-shadow: 0 0 transparent; " +
@@ -498,23 +486,31 @@ const VIEWPORT_DOWNSCALE = 2;
 
 function getViewportDownscale(viewport) {
    let effect = viewport.get_effect(BLUR_EFFECT_NAME);
-   if (effect instanceof DualKawaseBlur.DualFilteringBlurEffect || effect instanceof GaussianBlur.GaussianBlurEffect ||
-       effect instanceof MonteCarloBlur.MonteCarloBlurEffect)
-      return VIEWPORT_DOWNSCALE;
-   return 1;
+   if (!(effect instanceof DualKawaseBlur.DualFilteringBlurEffect || effect instanceof GaussianBlur.GaussianBlurEffect ||
+         effect instanceof MonteCarloBlur.MonteCarloBlurEffect))
+      return 1;
+   // With no blur (radius 0, or no Monte Carlo iterations) a scaled-down copy would only look soft
+   if (!effect.get_enabled() || !(effect.sample_reach > 0))
+      return 1;
+   return VIEWPORT_DOWNSCALE;
 }
 
 // Grows the expanded rect [x, y, width, height] so its position and size are multiples of downscale. The
 // scaled-down viewport then covers it exactly (no half-covered last pixel row for the blur to sample), and its
 // scene clone lands on whole pixels, so the x0.5 minification averages whole 2x2 blocks. Anything grown past
-// the stage edge is transparent, but stays inside the shaders' edge clamp.
-function alignToDownscale(rect, downscale) {
+// the stage edge is transparent, but stays inside the shaders' edge clamp. With keepBottom the bottom edge
+// stays put and only the top grows (a title bar's blur must not reach into its window's culled body).
+function alignToDownscale(rect, downscale, keepBottom = false) {
    let [x, y, width, height] = rect;
    if (downscale <= 1 || width <= 0 || height <= 0)
       return rect;
    let ax = Math.floor(x / downscale) * downscale;
-   let ay = Math.floor(y / downscale) * downscale;
    width = Math.ceil((width + x - ax) / downscale) * downscale;
+   if (keepBottom) {
+      let alignedHeight = Math.ceil(height / downscale) * downscale;
+      return [ax, y + height - alignedHeight, width, alignedHeight];
+   }
+   let ay = Math.floor(y / downscale) * downscale;
    height = Math.ceil((height + y - ay) / downscale) * downscale;
    return [ax, ay, width, height];
 }
@@ -5028,17 +5024,15 @@ class BlurApplications extends BlurBase {
             let expanded = getExpandedRect(rect.x, rect.y, rect.width, rect.height, margin);
             // Title-bar-only blur: below the title bar is this window's own opaque body, and Muffin doesn't
             // paint the parts of the windows underneath that it hides - not even through our clones of them.
-            // Rather than sample there (which needed NoCullEffect, so every window underneath was painted in
-            // full under the whole window on every redraw), end the expanded rect at the title bar's bottom
+            // Rather than sample there (which needed an effect on the window to stop Muffin culling, so every window
+            // underneath was painted in full under the whole window on every redraw), end the expanded rect at the title bar's bottom
             // edge: the shaders' edge clamp then finishes the blur there, as at a screen edge. A shaded
             // window has no body, so it keeps its margin.
-            if (data.titlebarsOnly && !data.metaWindow.is_shaded() && expanded[3] > 0)
+            let capped = data.titlebarsOnly && !data.metaWindow.is_shaded() && expanded[3] > 0;
+            if (capped)
                expanded[3] = Math.max(1, Math.ceil(rect.y + rect.height) - expanded[1]);
-            let [ex, ey, ew, eh] = alignToDownscale(expanded, ds);
+            let [ex, ey, ew, eh] = alignToDownscale(expanded, ds, capped);
             data.background.set_clip( ex, ey, ew, eh );
-
-            // Windows blurred before this change may still carry the NoCullEffect
-            this._setCullsWindowsBelow(compositor, true);
 
             // Size/position the viewport to the expanded rect (converted from global/stage coordinates
             // to compositor-local, since the viewport is a child of the compositor), and offset its
@@ -5068,21 +5062,10 @@ class BlurApplications extends BlurBase {
       }
    }
 
-   // Add or remove the NoCullEffect on a window actor (see NoCullEffect)
-   _setCullsWindowsBelow(compositor, culls) {
-      let effect = compositor.get_effect(NOCULL_EFFECT_NAME);
-      if (culls && effect) {
-         compositor.remove_effect(effect);
-      } else if (!culls && !effect) {
-         compositor.add_effect_with_name(NOCULL_EFFECT_NAME, new NoCullEffect());
-      }
-   }
-
    _unblurWindow(compositor) {
       if (compositor._blurCinnamonDataWindow) {
          let data = compositor._blurCinnamonDataWindow;
          data.signalManager.disconnectAllSignals();
-         this._setCullsWindowsBelow(compositor, true);
          this._destroyDynamicEffect(data.background);
          // Strip every effect (background's own, and viewport's when wrapped - see
          // BlurBase.destroy()) one at a time *before* destroying either actor, so a multi-pass

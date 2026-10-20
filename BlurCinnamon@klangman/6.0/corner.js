@@ -9,7 +9,8 @@ const Clutter  = imports.gi.Clutter;
 const Gio      = imports.gi.Gio;
 const GLib     = imports.gi.GLib;
 
-const EffectBase = (typeof global === 'undefined') ? null : require("./effect_base").EffectBase;
+const EffectBaseModule = (typeof global === 'undefined') ? null : require("./effect_base");
+const EffectBase = EffectBaseModule ? EffectBaseModule.EffectBase : null;
 
 const SHADER_FILENAME = 'corner.glsl';
 // The uuid passed to the first CornerEffect, for get_effect_source()
@@ -108,7 +109,7 @@ var CornerEffect = (typeof global === 'undefined') ?
             this._clip = (params.clip) ? params.clip : DEFAULT_PARAMS.clip;
             // Uniforms start at 0, so the scale must always be set (see the downscale property)
             this._downscale = 1;
-            this.set_uniform_value('downscale', 1.0);
+            this.set_uniform_value('downscale', EffectBaseModule.floatUniform(1));
 
             // Safe fetch of the current scale factor 
             this.update_radius();
@@ -158,7 +159,7 @@ var CornerEffect = (typeof global === 'undefined') ?
         set downscale(value) {
             if (this._downscale !== value) {
                 this._downscale = value;
-                this.set_uniform_value('downscale', parseFloat(value));
+                this.set_uniform_value('downscale', EffectBaseModule.floatUniform(value));
                 this.update_radius();
             }
         }

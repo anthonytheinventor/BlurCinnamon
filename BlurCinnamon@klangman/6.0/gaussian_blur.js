@@ -134,7 +134,6 @@ const GaussianBlurEffect =
             else
                this.chained_effect = null;
 
-            const theme_context = St.ThemeContext.get_for_stage(global.stage);
             this._update_sigma();
             this.set_enabled(this.radius > 0.);
         }
@@ -196,7 +195,12 @@ const GaussianBlurEffect =
             if (this._radius <= 0)
                 return 0;
             const scale_factor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
-            return 2 * Math.ceil(1.5 * (this._radius * scale_factor / 2));
+            // The loop runs in the actor's own pixels (sigma / downscale), each downscale screen pixels wide,
+            // and the bilinear taps reach one more of them
+            const ds = this.downscale;
+            if (ds <= 1)
+                return 2 * Math.ceil(1.5 * (this._radius * scale_factor / 2));
+            return ds * (2 * Math.ceil(1.5 * (this._radius * scale_factor / 2 / ds)) + 1);
         }
 
         get brightness() {

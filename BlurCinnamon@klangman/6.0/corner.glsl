@@ -32,11 +32,13 @@ float circle_bounds(vec2 p, vec2 center, float clip_radius) {
 }
 
 vec4 getTexture(vec2 uv) {
-    if (uv.x < 2. / width)
-        uv.x = 2. / width;
+    // 2.5: the centre of the first real texel. At 1:1 every pixel samples a texel centre (>= 2.5) anyway; a viewport
+    // scaled down by downscale samples between texels, and its first screen row would otherwise mix in the padding.
+    if (uv.x < 2.5 / width)
+        uv.x = 2.5 / width;
 
-    if (uv.y < 2. / height)
-        uv.y = 2. / height;
+    if (uv.y < 2.5 / height)
+        uv.y = 2.5 / height;
 
     if (uv.x > 1. - 3. / width)
         uv.x = 1. - 3. / width;
