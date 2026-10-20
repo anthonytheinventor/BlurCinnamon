@@ -968,9 +968,25 @@ function windowIsOnWorkspace(metaWindow, workspace) {
 // We don't do this work right away for a number of reasons:
 // 1. There are (what I believe to be) bugs in Clutter that causes hangs and weird behavior if done immediately
 // 2. The sort_windows_by_stacking() API will sort incorrectly when called from within the "notify::focus-window" event handler
+//
+// Clip updates call this on every frame of a window drag or a panel animation, so keep at most one pending
+// update per background: further calls before it runs only record the latest desktopOnly.
 function cloneWindowsForBackground(background, desktopOnly) {
-   //Promise.resolve().then( () => cloneWindowsForBackgroundNow(background, desktopOnly) );
-   Mainloop.idle_add( () => cloneWindowsForBackgroundNow(background, desktopOnly) );
+   background._blurCinnamonRecloneDesktopOnly = desktopOnly;
+   if (background._blurCinnamonRecloneId)
+      return;
+   background._blurCinnamonRecloneId = Mainloop.idle_add( () => {
+      background._blurCinnamonRecloneId = 0;
+      cloneWindowsForBackgroundNow(background, background._blurCinnamonRecloneDesktopOnly);
+      return false;
+   });
+}
+
+function cancelCloneWindowsForBackground(background) {
+   if (background._blurCinnamonRecloneId) {
+      Mainloop.source_remove(background._blurCinnamonRecloneId);
+      background._blurCinnamonRecloneId = 0;
+   }
 }
 
 // Find windows that need to be cloned for the background passed in.
@@ -1172,6 +1188,7 @@ class CloneManager {
          return;
       }
       this._signalManager.disconnect( "notify::mapped", background );
+      cancelCloneWindowsForBackground(background);
       destroyAllWindowsClones(background);
       delete background._blurCinnamonWinClones;
       if (background._blurCinnamonDeskletClone) {
@@ -1394,31 +1411,29 @@ class CloneManager {
    // The metaWindow has moved, so we need to move it's clones.
    // Also we check if we need to add or remove clones based on
    // the window overlap state of the new size/location of a window
+   // Runs on every frame of a window move/resize/animation, for every background
    _allocationChanged(metaWindow) {
       let rect = metaWindow.get_buffer_rect();
       this._backgrounds.forEach( (background) => {
+         let clones = background._blurCinnamonWinClones;
+         if (!clones)
+            return;
          let [blurX, blurY, blurWidth, blurHeight] = getBackgroundClip(background);
-         let blurX2 = blurX + blurWidth;
-         let blurY2 = blurY + blurHeight;
          let overlap = rectOverlap(rect.x, rect.y, rect.x+rect.width, rect.y+rect.height, blurX, blurY, blurX+blurWidth, blurY+blurHeight);
+         let windowClone = clones.find( (clone) => clone._metaWindow === metaWindow );
+         // Nothing to add or remove: skip the stacking check (a native sort of the windows)
+         if (!windowClone && !overlap)
+            return;
          let underOwner = (!background._blurCinnamonMetaWindowOwner || metaWindow.get_window_type() === Meta.WindowType.DESKTOP || isAbove(background._blurCinnamonMetaWindowOwner, metaWindow));
-         let found = false;
-         // We are going backwards through the clones since destroyWindowClone mutates the array
-         for (let idx=background._blurCinnamonWinClones.length-1 ; idx >= 0 ; idx-- ) {
-            let windowClone = background._blurCinnamonWinClones[idx];
-            if (windowClone._metaWindow === metaWindow) {
-               found = true;
-               if (!overlap || !underOwner) {
-                  debugMsg( `Removing unneeded clone` );
-                  destroyWindowClone(windowClone, background);
-                  break;
-               } else {
-                  windowClone.x = rect.x;
-                  windowClone.y = rect.y;
-               }
+         if (windowClone) {
+            if (!overlap || !underOwner) {
+               debugMsg( `Removing unneeded clone` );
+               destroyWindowClone(windowClone, background);
+            } else {
+               windowClone.x = rect.x;
+               windowClone.y = rect.y;
             }
-         }
-         if (!found && overlap && underOwner) {
+         } else if (underOwner) {
             debugMsg( `Adding clone on allocation event` );
             createWindowClone(metaWindow, background, background._blurCinnamonDesktopOnly)
          }
