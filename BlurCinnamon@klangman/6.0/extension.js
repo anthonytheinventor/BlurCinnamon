@@ -4813,6 +4813,12 @@ class BlurApplications extends BlurBase {
       let enabled;
       let wmclass = metaWindow.get_wm_class();
       let winType = metaWindow.get_window_type();
+      // Plank's window is much larger than the dock it draws, and its blur region can only be read through
+      // Gdk.property_get() in _getPlankBlurRegion(), which segfaults cjs (Gdk-3.0's GIR marks the GdkAtom
+      // out-parameter caller-allocates, cjs then calls gdk_atom_name() on garbage and strlen(NULL)). So never
+      // blur Plank, rather than crash Cinnamon on every start while it runs, until there's a safe way to read it.
+      if (wmclass === "Plank")
+         return [false, 100, 0, undefined, BlurType.None, 0, 100, 0, false, false, false];
       // We want to allow blurring for normal window, docks (i.e Plank) and desktop windows (i.e Conky)
       if ((winType === Meta.WindowType.NORMAL || (settings.windowsTitlebarBlur && (winType === Meta.WindowType.DIALOG || winType === Meta.WindowType.MODAL_DIALOG)) ||
            winType === Meta.WindowType.DOCK || winType === Meta.WindowType.DESKTOP) && wmclass !== "Nemo-desktop") 
