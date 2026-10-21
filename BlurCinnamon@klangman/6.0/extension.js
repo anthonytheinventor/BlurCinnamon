@@ -506,22 +506,29 @@ function getViewportDownscale(viewport) {
 
 // Grows the expanded rect [x, y, width, height] so its position and size are multiples of downscale. The
 // scaled-down viewport then covers it exactly (no half-covered last pixel row for the blur to sample), and its
-// scene clone lands on whole pixels, so the x0.5 minification averages whole 2x2 blocks. Anything grown past
-// the stage edge is transparent, but stays inside the shaders' edge clamp. With keepBottom the bottom edge
-// stays put and only the top grows (a title bar's blur must not reach into its window's culled body).
+// scene clone lands on whole pixels, so the x0.5 minification averages whole 2x2 blocks. With keepBottom the
+// bottom edge stays put and only the top grows (a title bar's blur must not reach into its window's culled body).
+// Returns [rect, downscale]. Growing past the stage would bring back the transparent margin that
+// getExpandedRect() cuts away (on an odd stage size, or a title bar at the top of the screen grown upwards),
+// so when the aligned rect would leave the stage the viewport stays at full size instead.
 function alignToDownscale(rect, downscale, keepBottom = false) {
    let [x, y, width, height] = rect;
    if (downscale <= 1 || width <= 0 || height <= 0)
-      return rect;
+      return [rect, 1];
    let ax = Math.floor(x / downscale) * downscale;
    width = Math.ceil((width + x - ax) / downscale) * downscale;
+   let ay;
    if (keepBottom) {
       let alignedHeight = Math.ceil(height / downscale) * downscale;
-      return [ax, y + height - alignedHeight, width, alignedHeight];
+      ay = y + height - alignedHeight;
+      height = alignedHeight;
+   } else {
+      ay = Math.floor(y / downscale) * downscale;
+      height = Math.ceil((height + y - ay) / downscale) * downscale;
    }
-   let ay = Math.floor(y / downscale) * downscale;
-   height = Math.ceil((height + y - ay) / downscale) * downscale;
-   return [ax, ay, width, height];
+   if (ax < 0 || ay < 0 || ax + width > global.stage.width || ay + height > global.stage.height)
+      return [rect, 1];
+   return [[ax, ay, width, height], downscale];
 }
 
 // Positions viewport (at px, py in its parent) over the expanded rect [ex, ey, ew, eh] (stage coordinates),
@@ -2083,7 +2090,7 @@ class BlurBase {
    _setLiquidGlassRect(viewport, rect) {
       // Liquid Glass never runs on a scaled-down viewport, and a rect in a scaled viewport's pixels would be
       // the wrong size for one added later (until the next clip update replaces it), so only keep unscaled rects
-      viewport._blurCinnamonGlassRect = (getViewportDownscale(viewport) > 1) ? null : rect;
+      viewport._blurCinnamonGlassRect = (viewport.scale_x > 1) ? null : rect;
       let blurEffect = this._getBlurEffect(viewport);
       if (blurEffect instanceof Refraction.RefractionEffect)
          blurEffect.glass_rect = rect;
@@ -2371,8 +2378,7 @@ class BlurBase {
          // Remember the visible rect so the margin can be re-derived if the blur radius/type changes
          viewport._blurCinnamonVisibleRect = [x, y, width, height];
          let margin = (width > 0 && height > 0) ? getViewportMargin(viewport) : 0;
-         let ds = getViewportDownscale(viewport);
-         let [ex, ey, ew, eh] = alignToDownscale(getExpandedRect(x, y, width, height, margin), ds);
+         let [[ex, ey, ew, eh], ds] = alignToDownscale(getExpandedRect(x, y, width, height, margin), getViewportDownscale(viewport));
          background.set_clip(ex, ey, ew, eh);
          setViewportGeometry(viewport, ex, ey, ex, ey, ew, eh, ds);
          let cornerEffect = this._getCornerEffect(viewport);
@@ -5050,18 +5056,18 @@ class BlurApplications extends BlurBase {
             data.viewport._blurCinnamonSamplingRect = [rect.x, rect.y, rect.width, rect.height];
             
             let margin = getViewportMargin(data.viewport);
-            let ds = getViewportDownscale(data.viewport);
             let expanded = getExpandedRect(rect.x, rect.y, rect.width, rect.height, margin);
             // Title-bar-only blur: below the title bar is this window's own opaque body, and Muffin doesn't
             // paint the parts of the windows underneath that it hides - not even through our clones of them.
             // Rather than sample there (which needed an effect on the window to stop Muffin culling, so every window
             // underneath was painted in full under the whole window on every redraw), end the expanded rect at the title bar's bottom
             // edge: the shaders' edge clamp then finishes the blur there, as at a screen edge. A shaded
-            // window has no body, so it keeps its margin.
+            // window has no body, so it keeps its margin. The cap only ever shrinks the rect: a title bar
+            // hanging off the bottom of the screen must not grow it back past the stage (see getExpandedRect()).
             let capped = data.titlebarsOnly && !data.metaWindow.is_shaded() && expanded[3] > 0;
             if (capped)
-               expanded[3] = Math.max(1, Math.ceil(rect.y + rect.height) - expanded[1]);
-            let [ex, ey, ew, eh] = alignToDownscale(expanded, ds, capped);
+               expanded[3] = Math.max(1, Math.min(expanded[3], Math.ceil(rect.y + rect.height) - expanded[1]));
+            let [[ex, ey, ew, eh], ds] = alignToDownscale(expanded, getViewportDownscale(data.viewport), capped);
             data.background.set_clip( ex, ey, ew, eh );
 
             // Size/position the viewport to the expanded rect (converted from global/stage coordinates
