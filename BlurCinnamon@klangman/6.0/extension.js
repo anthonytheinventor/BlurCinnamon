@@ -1290,6 +1290,9 @@ class CloneManager {
       windows.forEach( (window) => {
          let metaWindow = window.get_meta_window();
          let compositor = metaWindow.get_compositor_private();
+         // A window that is being destroyed has no compositor anymore
+         if (!compositor)
+            return;
          if (!metaWindow._blurCinnamonVisibleEventId)
             metaWindow._blurCinnamonVisibleEventId = compositor.connect("notify::visible", () => this._visibilityChanged(metaWindow) );
          if (compositor.visible && metaWindow.get_window_type() !== Meta.WindowType.DESKTOP)
@@ -1310,7 +1313,7 @@ class CloneManager {
       if (compositor.visible) {
          debugMsg( `Window "${metaWindow.get_title()}" is visible!` );
          this._onWindowAppeared(metaWindow);
-         if (compositor._blurCinnamonDataWindow) {
+         if (compositor._blurCinnamonDataWindow && blurApplications) {
             blurApplications.reapplyEffects(metaWindow);
          }
       }else {
@@ -1325,6 +1328,8 @@ class CloneManager {
 
    _onWindowAppeared(metaWindow) {
       let compositor = metaWindow.get_compositor_private();
+      if (!compositor)
+         return;
       let winRect = metaWindow.get_buffer_rect();
       let winX = winRect.x;
       let winY = winRect.y;
@@ -1462,19 +1467,24 @@ class CloneManager {
       this._backgrounds.forEach( (background) => {
          this.removeBackground(background);
       });
-      let windows = global.get_window_actors();
-      windows.forEach( (window) => {
-         let metaWindow = window.get_meta_window();
-         if (metaWindow._blurCinnamonAllocEventID) {
-            metaWindow.get_compositor_private().disconnect(metaWindow._blurCinnamonAllocEventID);
-            delete metaWindow._blurCinnamonAllocEventID;
-         }
-         if (metaWindow._blurCinnamonVisibleEventId) {
-            metaWindow.get_compositor_private().disconnect(metaWindow._blurCinnamonVisibleEventId);
-            delete metaWindow._blurCinnamonVisibleEventId;
-         }
-      });
+      disconnectWindowListeners();
    }
+}
+
+// Removes the per-window listeners that CloneManager stores on every window. They are kept on the
+// MetaWindows, so they outlive the CloneManager that added them unless they are removed here.
+function disconnectWindowListeners() {
+   global.get_window_actors().forEach( (window) => {
+      let metaWindow = window.get_meta_window();
+      if (metaWindow._blurCinnamonAllocEventID) {
+         window.disconnect(metaWindow._blurCinnamonAllocEventID);
+         delete metaWindow._blurCinnamonAllocEventID;
+      }
+      if (metaWindow._blurCinnamonVisibleEventId) {
+         window.disconnect(metaWindow._blurCinnamonVisibleEventId);
+         delete metaWindow._blurCinnamonVisibleEventId;
+      }
+   });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -6364,7 +6374,18 @@ function init(extensionMeta) {
    originalSizeChangeWindowDone = Main.wm._sizeChangeWindowDone;
 }
 
+// If enabling fails part way, undo what was set up right away: Cinnamon only calls disable() when it later unloads
+// the extension, and until then handlers left on windows keep running (and throwing while windows are mapped).
 function enable() {
+   try {
+      return enableEffects.call(this);
+   } catch (e) {
+      try { disable(); } catch (e2) { global.logError(e2); }
+      throw e;
+   }
+}
+
+function enableEffects() {
    settings = new BlurSettings(metaData.uuid);
 
    // Save the version number to the settings so that the About page can read it (is there a better way?)
@@ -6456,6 +6477,9 @@ function enable() {
 }
 
 function disable() {
+  // Already undone by a failed enable()
+  if (!settings)
+     return;
   cancelWindowEnableIdle();
 
    if (Overview.Overview.prototype._oldAnimateVisible) {
@@ -6524,6 +6548,9 @@ function disable() {
       blurDesklets.destroy();
       blurDesklets = null;
    }
+
+   // Also a safety net: a CloneManager whose constructor threw is not referenced anywhere, but its listeners are
+   disconnectWindowListeners();
 
    // Every component's backgrounds have released their wallpaper clones by now; this is just a safety net
    if (wallpaperTracker) {
