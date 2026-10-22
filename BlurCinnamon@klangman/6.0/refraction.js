@@ -855,9 +855,12 @@ const RefractionEffect = new GObject.registerClass({
             stable_size,
             stabilizing
         ) {
+            // An empty rect (a menu that is still opening) is no size to stabilize from or to
+            if (size <= 0)
+                return [start, size, false];
             const size_changed =
                 previous_size !== null &&
-                previous_size >= 0 &&
+                previous_size > 0 &&
                 Math.abs(size - previous_size) > CLIP_STABILIZE_EPSILON;
 
             if (!stabilizing && !size_changed)
