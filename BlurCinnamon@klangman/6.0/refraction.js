@@ -66,6 +66,17 @@ function set_uniform(effect, name, value) {
     } catch (e) { }
 }
 
+// Position of an actor on the stage from its own and its ancestors' positions. Unlike
+// get_transformed_position(), it is current as soon as a position is set, before the next allocation.
+function stage_position(actor) {
+    let x = 0, y = 0;
+    for (let a = actor; a; a = a.get_parent()) {
+        x += a.x;
+        y += a.y;
+    }
+    return [x, y];
+}
+
 function upload_uniforms(effect) {
     if (!effect._bms_uniforms_dirty || !effect._bms_uniforms || !effect.get_actor?.())
         return;
@@ -730,8 +741,10 @@ const RefractionEffect = new GObject.registerClass({
             const actor = this.get_actor();
             this._clip_on_screen = !!actor && actor.is_mapped() && this._clip_width > 0 && this._clip_height > 0;
             // The rect is in the actor's own coordinates, and a viewport actor moves when its sampling margin
-            // changes (it grows to the whole stage when a resize starts). Compare in the current coordinates.
-            this._clip_origin = actor ? [actor.x, actor.y] : null;
+            // changes (it grows to the whole stage when a resize starts). Compare in the current coordinates,
+            // using the actor's position on the stage: a window's viewport is a child of the window actor, so
+            // its own x/y also change when only the window moves.
+            this._clip_origin = actor ? stage_position(actor) : null;
             if (previous_origin && this._clip_origin) {
                 const dx = previous_origin[0] - this._clip_origin[0];
                 const dy = previous_origin[1] - this._clip_origin[1];
