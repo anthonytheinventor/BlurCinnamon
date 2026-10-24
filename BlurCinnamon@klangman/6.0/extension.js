@@ -1506,7 +1506,7 @@ class CloneManager {
             }
          } else if (underOwner) {
             debugMsg( `Adding clone on allocation event` );
-            createWindowClone(metaWindow, background, background._blurCinnamonDesktopOnly)
+            cloneWindowsForBackground(background, background._blurCinnamonDesktopOnly);
          }
       });
    }
